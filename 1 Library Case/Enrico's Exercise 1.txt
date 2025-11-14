@@ -1,0 +1,20 @@
+Enrico's Exercise 1:
+🧩 Exercise: Text and Sentence Analysis (Procedural Version)
+🧠 Objective
+Write a Python program that analyzes a short piece of text entered by the user.
+The program should work without using functions or classes — just simple variables, loops, and conditionals.
+ 
+🧮 Program requirements
+Your program should:
+1. Ask the user to enter a text.
+	Example input: The quick brown fox jumps over the lazy dog. The fox was quick and clever!
+2. Split the text into sentences.
+	For this exercise, you can assume that sentences end with ., !, or ?.
+3. For each sentence:
+	- Count the number of words in the sentence.
+	- Find the three most frequent words in that sentence and their number of occurrences.
+4. Compute totals for the entire text:
+	- Total number of sentences.
+	- Total number of words.
+	- The three most frequent words overall (across all sentences).
+5. Display the results clearly, for example:

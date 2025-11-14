@@ -1,0 +1,20 @@
+[
+    {
+        "name": "River Line in Florence",
+        "observed": "River Geometry (Polyline)",
+        "year": "2025",
+        "organization_id": "ORG0001"
+    },
+    {
+        "name": "Water Level of Tuscany",
+        "observed": "Water",
+        "year": "2025",
+        "organization_id": "ORG0002"
+    },
+    {
+        "name": "River Line in Empoli",
+        "observed": "River Geometry (Polyline)",
+        "year": "2025",
+        "organization_id": "ORG0001"
+    }
+]
