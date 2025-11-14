@@ -1,0 +1,8 @@
+from board import create_app
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(host="149.139.19.126", port=8000, debug=True)
+#copy this in terminal
+#python -m flask --app board run --port 8000 --debug

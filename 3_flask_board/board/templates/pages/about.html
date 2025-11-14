@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block header %}
+  <h2>{% block title %}Organizations{% endblock title %}</h2>
+{% endblock header %}
+
+{% block content %}
+  <p>This is a list of organizations.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Email</th>
+        <th>Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for org in organizations %}
+      <tr>
+        <td>{{ org.org_id }}</td>
+        <td>{{ org.name }}</td>
+        <td>{{ org.email }}</td>
+        <td>{{ org.role }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock content %}
