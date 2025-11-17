@@ -1,0 +1,20 @@
+[
+    {
+        "name": "River Line in Florence",
+        "observed": "River Geometry (Polyline)",
+        "year": "2025",
+        "organization_id": "ORG0001"
+    },
+    {
+        "name": "River Line in Empoli",
+        "observed": "River Geometry (Polyline)",
+        "year": "2025",
+        "organization_id": "ORG0001"
+    },
+    {
+        "name": "temperature from pisa",
+        "observed": "precipitation",
+        "year": "4040",
+        "organization_id": "ORG0003"
+    }
+]

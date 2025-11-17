@@ -32,3 +32,33 @@ main {
   width: 80%;
   margin: 0 auto;
 }
+
+table {
+  border-collapse: collapse;
+  width: 80%;
+  margin: 20px auto;
+}
+
+th, td {
+  border: 1px solid #333;
+  padding: 8px;
+  text-align: left;
+}
+
+th {
+  background-color: #f2f2f2;
+}
+
+tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+button {
+  padding: 6px 12px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #eee;
+}
