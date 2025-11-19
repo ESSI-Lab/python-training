@@ -1,0 +1,26 @@
+[
+    {
+        "org_id": "ORG0001",
+        "name": "OpenStreetMap",
+        "email": "osm@example.com",
+        "role": "Publisher"
+    },
+    {
+        "org_id": "ORG0002",
+        "name": "Hydrology Institute",
+        "email": "hydins@example.com",
+        "role": "Originator"
+    },
+    {
+        "org_id": "ORG0003",
+        "name": "Meteorological Institute",
+        "email": "metins@example.com",
+        "role": "Originator"
+    },
+    {
+        "org_id": "ORG0004",
+        "name": "Industrial Institute",
+        "email": "indstry@example.com",
+        "role": "Originator"
+    }
+]

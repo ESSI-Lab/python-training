@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Organizations API Frontend</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        textarea { width: 100%; height: 150px; }
+        input, button { padding: 5px; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>Organizations API Frontend</h1>
+
+    <!-- GET Section -->
+    <h2>GET /organizations</h2>
+    <button onclick="getOrganizations()">Fetch All Organizations</button>
+    <pre id="getOutput"></pre>
+
+    <!-- POST Section -->
+    <h2>POST /organizations</h2>
+    <textarea id="postInput">
+{
+    "name": "New Org",
+    "email": "new@example.com",
+    "role": "Publisher"
+}
+    </textarea>
+    <br>
+    <button onclick="addOrganization()">Add Organization</button>
+    <pre id="postOutput"></pre>
+
+    <!-- DELETE Section -->
+    <h2>DELETE /organizations/:org_id</h2>
+    <input type="text" id="deleteInput" placeholder="Enter org_id e.g. ORG0001">
+    <button onclick="deleteOrganization()">Delete Organization</button>
+    <pre id="deleteOutput"></pre>
+
+<script>
+const API_URL = "/organizations";
+
+// GET
+function getOrganizations() {
+    fetch(API_URL)
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById("getOutput").textContent = JSON.stringify(data, null, 4);
+        });
+}
+
+// POST
+function addOrganization() {
+    const jsonData = JSON.parse(document.getElementById("postInput").value);
+    fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(jsonData)
+    })
+    .then(res => res.json())
+    .then(data => {
+        document.getElementById("postOutput").textContent = JSON.stringify(data, null, 4);
+        getOrganizations(); // refresh GET view
+    });
+}
+
+// DELETE
+function deleteOrganization() {
+    const org_id = document.getElementById("deleteInput").value.trim();
+    if (!org_id) { alert("Enter org_id"); return; }
+
+    fetch(`${API_URL}/${org_id}`, { method: "DELETE" })
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById("deleteOutput").textContent = JSON.stringify(data, null, 4);
+            getOrganizations(); // refresh GET view
+        });
+}
+</script>
+</body>
+</html>
