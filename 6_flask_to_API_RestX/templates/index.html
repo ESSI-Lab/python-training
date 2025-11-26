@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Organizations</title>
+    <style>
+        table { border-collapse: collapse; width: 80%; margin: 20px 0; }
+        th, td { border: 1px solid #333; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        button { padding: 5px 10px; cursor: pointer; }
+        input, select { padding: 5px; width: 99%; }
+    </style>
+</head>
+<body>
+    <h1>Organizations</h1>
+    <!-- GET Body -->
+    <h2>List of Organizations</h2>
+    <table id="org-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Manage</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <!-- POST Body -->
+    <h2>Add New Organization</h2>
+    <form id="add-org-form">
+        <table>
+            <tr>
+                <td><label for="name">Name:</label></td>
+                <td><input type="text" id="name" name="name" required></td>
+            </tr>
+            <tr>
+                <td><label for="email">Email:</label></td>
+                <td><input type="email" id="email" name="email" required></td>
+            </tr>
+            <tr>
+                <td><label for="role">Role:</label></td>
+                <td>
+                    <select id="role" name="role" required>
+                        <option value="">Select Role</option>
+                        <option value="Publisher">Publisher</option>
+                        <option value="Originator">Originator</option>
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2">
+                    <button type="submit">Add Organization</button>
+                </td>
+            </tr>
+        </table>
+    </form>
+
+    <script>
+        const tableBody = document.querySelector("#org-table tbody");
+        const form = document.getElementById("add-org-form");
+
+        // GET: Fetch and render organizations
+        async function loadOrganizations() {
+            tableBody.innerHTML = "";
+            debugger
+            const res = await fetch("/organizations"); // GET request
+            const orgs = await res.json();
+            orgs.forEach(org => {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td>${org.org_id}</td>
+                    <td>${org.name}</td>
+                    <td>${org.email}</td>
+                    <td>${org.role}</td>
+                    <td>
+                        <button onclick="deleteOrg('${org.org_id}', '${org.name}')">Delete</button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        // DELETE: Delete organization
+        async function deleteOrg(org_id, name) {
+            if (confirm(`Are you sure you want to delete ${name}?`)) {
+                await fetch(`/organizations/${org_id}`, { method: "DELETE" }); // DELETE request
+                loadOrganizations();
+            }
+        }
+
+        // POST: Add organization
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const data = {
+                name: form.name.value.trim(),
+                email: form.email.value.trim(),
+                role: form.role.value.trim()
+            };
+
+            if (!data.name || !data.email || !data.role) {
+                alert("All fields are required!");
+                return;
+            }
+
+            const res = await fetch("/organizations", {
+                method: "POST", // POST request
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data)
+            });
+
+            if (res.ok) {
+                form.reset();
+                loadOrganizations();
+            } else {
+                const err = await res.json();
+                alert(err.error || "Failed to add organization");
+            }
+        });
+
+        // Initial load using GET
+        loadOrganizations();
+    </script>
+</body>
+</html>

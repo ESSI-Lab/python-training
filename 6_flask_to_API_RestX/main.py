@@ -1,5 +1,5 @@
 from flask import Flask, render_template, current_app, request
-from flask_restx import Api, Resource, fields
+from flask_restx import Api, Resource
 import json, os
 
 app = Flask(__name__)
@@ -10,17 +10,16 @@ api = Api(app,
           doc="/api/organizations")
 
 # Namespace
-ns = api.namespace("Organizations", description="Organizations Operations")
+ns = api.namespace("organizations", description="Organizations Operations")
 
 # JSON path helper
 def get_json_path():
     return os.path.join(current_app.root_path, "organizations.json")
 
 # HTML frontend
-@app.route("/")
-def index():
-    print(">>> INDEX ROUTE CALLED")
-    return "Hello World"
+@app.route("/home")
+def frontend():
+    return render_template("index.html")
 
 # GET/POST organizations
 @ns.route("")
