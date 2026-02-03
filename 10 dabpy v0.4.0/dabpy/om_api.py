@@ -3,26 +3,23 @@ import pandas as pd
 import urllib.parse
 import matplotlib.pyplot as plt
 from datetime import datetime
+from pathlib import Path
+import time
 
-def obfuscate_token(url, token):
-    """Replace the token in a URL with '***' for safe printing."""
-    return url.replace(token, "***")
+pd.set_option("display.max_columns", None)
+pd.set_option("display.max_colwidth", None)
+pd.set_option("display.expand_frame_repr", False)
 
+# --- Feature and Observation classes ---
 class Feature:
-    """Python representation of a WHOS feature."""
     def __init__(self, feature_json):
         self.id = feature_json["id"]
         self.name = feature_json["name"]
         self.coordinates = feature_json["shape"]["coordinates"]
         self.parameters = {param["name"]: param["value"] for param in feature_json["parameter"]}
         self.related_party = feature_json.get("relatedParty", [])
-
-        if self.related_party:
-            self.contact_name = self.related_party[0].get("individualName", "")
-            self.contact_email = self.related_party[0].get("electronicMailAddress", "")
-        else:
-            self.contact_name = ""
-            self.contact_email = ""
+        self.contact_name = self.related_party[0].get("individualName", "") if self.related_party else ""
+        self.contact_email = self.related_party[0].get("electronicMailAddress", "") if self.related_party else ""
 
     def to_dict(self):
         return {
@@ -39,150 +36,539 @@ class Feature:
         return f"<Feature id={self.id} name={self.name}>"
 
 class Observation:
-    """Python representation of a WHOS observation."""
     def __init__(self, obs_json):
         params = {param["name"]: param["value"] for param in obs_json.get("parameter", [])}
         self.id = obs_json["id"]
-        self.type = obs_json.get("type")
         self.source = params.get("source")
-        self.observed_property_definition = params.get("observedPropertyDefinition")
-        self.original_observed_property = params.get("originalObservedProperty")
         self.observed_property = obs_json.get("observedProperty", {}).get("title")
         self.phenomenon_time_begin = obs_json.get("phenomenonTime", {}).get("begin")
         self.phenomenon_time_end = obs_json.get("phenomenonTime", {}).get("end")
-        self.feature_of_interest_href = obs_json.get("featureOfInterest", {}).get("href")
-        result_meta = obs_json.get("result", {}).get("defaultPointMetadata", {})
-        self.uom = result_meta.get("uom")
-        self.interpolation_type = result_meta.get("interpolationType", {}).get("title")
         self.points = obs_json.get("result", {}).get("points", [])
 
     def to_dict(self):
         return {
             "ID": self.id,
             "Source": self.source,
-            "Observed Property Definition": self.observed_property_definition,
-            "Original Observed Property": self.original_observed_property,
             "Observed Property": self.observed_property,
             "Phenomenon Time Begin": self.phenomenon_time_begin,
-            "Phenomenon Time End": self.phenomenon_time_end,
-            "Feature of Interest Href": self.feature_of_interest_href,
-            "Observation Type": self.type,
-            "Unit of Measurement": self.uom,
-            "Interpolation Type": self.interpolation_type
+            "Phenomenon Time End": self.phenomenon_time_end
         }
 
     def __repr__(self):
         return f"<Observation id={self.id} property={self.observed_property}>"
 
-class WHOSClient:
-    """WHOS API client to retrieve features and observations as Python objects or Pandas DataFrame."""
-    def __init__(self, token, view="whos"):
+class Download:
+    """Represents a single download record."""
+    def __init__(self, download_json, client=None):
+        self.client = client
+        self.downloadName = download_json.get("downloadName")
+        self.sizeInMB = download_json.get("sizeInMB")
+        self.status = download_json.get("status")
+        self.statusMessage = download_json.get("statusMessage")
+        self.timestamp = download_json.get("timestamp")
+        self.locators = download_json.get("locators", [])  # <-- updated
+        self.id = download_json.get("id")
+
+        # Handle new API format
+        locators = download_json.get("locators")
+        if locators and len(locators) > 0:
+            self.locator = locators[0]   # first URL in the list
+        else:
+            self.locator = download_json.get("locator")  # fallback to old format
+
+    def to_dict(self):
+        return {
+            "File Name": self.downloadName,
+            "ID": self.id,
+            "Status": self.status,
+            "Download Link": self.locator,
+            "Size (in MB)": self.sizeInMB,
+            "Timestamp": self.timestamp
+        }
+
+    def delete(self):
+        if not self.client:
+            raise RuntimeError("Download is not attached to a client.")
+        return self.client.delete_download(self.id)
+
+    def __repr__(self):
+        return f"<Download id={self.id} name={self.downloadName} status={self.status}>"
+
+class DeleteResult:
+    def __init__(self, download_id: str, status: str = "deleted"):
+        self.status = status
+        self.id = download_id
+
+    def to_dict(self):
+        return {
+            "status": self.status,
+            "id": self.id
+        }
+
+    def __repr__(self):
+        return f"ID = {self.id} | status = {self.status}"
+
+# --- Collections with per-page support ---
+class FeaturesCollection:
+    """Collection of features with per-page pagination."""
+    def __init__(self, client, constraints, initial_features=None, resumption_token=None, page=1, verbose=True):
+        self.client = client
+        self.constraints = constraints
+        self.features = initial_features or []
+        self.current_page_features = initial_features or []
+        self.resumption_token = resumption_token
+        self.completed = False
+        self.page = page
+        self.verbose = verbose
+        if self.verbose:
+            self._print_summary(len(self.current_page_features))
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx]
+
+    def next(self):
+        if self.completed or not self.resumption_token:
+            print("No more data to fetch.")
+            return self
+
+        url = f"{self.client.base_url}features?{self.constraints.to_query()}&resumptionToken={urllib.parse.quote(self.resumption_token)}"
+        self.page += 1
+        if self.verbose:
+            print(f"Retrieving page {self.page}: {url.replace(self.client.token, '***')}")
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+        new_features = [Feature(f) for f in data.get("results", [])]
+        self.current_page_features = new_features
+        self.features.extend(new_features)
+        token = data.get("resumptionToken")
+        self.resumption_token = token.split(",")[0] if token else None
+        self.completed = data.get("completed", True) or not self.resumption_token
+
+        if self.verbose:
+            self._print_summary(len(new_features))
+
+        return self
+
+    def to_df(self):
+        return pd.DataFrame([f.to_dict() for f in self.current_page_features])
+
+    def _print_summary(self, n_returned):
+        prefix = "first" if self.page == 1 else "next"
+        msg = f"Returned {prefix} {n_returned} features"
+        if self.completed:
+            print(msg + " (completed, data finished).")
+        elif self.resumption_token:
+            print(msg + " (not completed, more data available).\nUse .next() to move to the next page.")
+        else:
+            print(msg + " (completed, data finished).")  # edge case: no token but completed=False
+
+class ObservationsCollection:
+    """Collection of observations with per-page pagination."""
+    def __init__(self, client, constraints, initial_obs=None, resumption_token=None, page=1, verbose=True):
+        self.client = client
+        self.constraints = constraints
+        self.observations = initial_obs or []
+        self.current_page_obs = initial_obs or []
+        self.resumption_token = resumption_token
+        self.completed = False
+        self.page = page
+        self.verbose = verbose
+        if self.verbose:
+            self._print_summary(len(self.current_page_obs))
+
+    def __len__(self):
+        return len(self.observations)
+
+    def __getitem__(self, idx):
+        return self.observations[idx]
+
+    def next(self):
+        if self.completed or not self.resumption_token:
+            print("No more data to fetch.")
+            return self
+
+        url = f"{self.client.base_url}observations?{self.constraints.to_query()}&resumptionToken={urllib.parse.quote(self.resumption_token)}"
+        self.page += 1
+        if self.verbose:
+            print(f"Retrieving page {self.page}: {url.replace(self.client.token, '***')}")
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+        new_obs = [Observation(o) for o in data.get("member", [])]
+        self.current_page_obs = new_obs
+        self.observations.extend(new_obs)
+        token = data.get("resumptionToken")
+        self.resumption_token = token.split(",")[0] if token else None
+        self.completed = data.get("completed", True) or not self.resumption_token
+
+        if self.verbose:
+            self._print_summary(len(new_obs))
+
+        return self
+
+    def to_df(self):
+        return pd.DataFrame([o.to_dict() for o in self.current_page_obs])
+
+    def _print_summary(self, n_returned):
+        prefix = "first" if self.page == 1 else "next"
+        msg = f"Returned {prefix} {n_returned} observations"
+        if self.completed:
+            print(msg + " (completed, data finished).")
+        elif self.resumption_token:
+            print(msg + " (not completed, more data available).\nUse .next() to move to the next page.")
+        else:
+            print(msg + " (completed, data finished).")  # edge case
+
+
+class DownloadsCollection:
+    """Collection of Download objects with simple list behavior."""
+
+    def __init__(self, downloads_list=None):
+        self.downloads = downloads_list or []
+
+    def __len__(self):
+        return len(self.downloads)
+
+    def __getitem__(self, idx):
+        return self.downloads[idx]
+
+    def to_df(self):
+        return pd.DataFrame([d.to_dict() for d in self.downloads])
+
+    def __repr__(self):
+        return f"<DownloadsCollection count={len(self.downloads)}>"
+
+# --- Main DAB Client Class ---
+class DABClient:
+    """Generic DAB client for retrieving features and observations."""
+    def __init__(self, token="{token}", view="{view}", base_url_template=None):
         self.token = token
         self.view = view
-        self.base_url = f"https://whos.geodab.eu/gs-service/services/essi/token/{token}/view/{view}/om-api/"
+        # Use provided template or default generic template
+        if base_url_template:
+            self.base_url_template = base_url_template
+        else:
+            # Default generic template
+            self.base_url_template = "https://gs-service-preproduction.geodab.eu/gs-service/services/essi/token/{token}/view/{view}/om-api/"
 
-    # --- Retrieve features ---
-    def get_features(self, constraints):
-        """Accepts a Constraints object and builds the query URL internally."""
-        if not hasattr(constraints, "to_query"):
-            raise ValueError("constraints must be a Constraints object or have a to_query() method")
+        # Format the URL if token/view are actual values
+        if "{token}" not in self.token and "{view}" not in self.view:
+            self.base_url = self.base_url_template.format(token=self.token, view=self.view)
+        else:
+            # Keep placeholders if token/view are default
+            self.base_url = self.base_url_template
 
-        query = constraints.to_query()
-        url = self.base_url + "features?" + query
-        print("Retrieving " + obfuscate_token(url, self.token))
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"HTTP GET failed: {response.status_code}")
+    def _obfuscate_download_id_in_url(self, url: str) -> str:
+        """
+        Obfuscate email part of download_id inside query string.
+        Example:
+        id=email@domain:uuid → id=***:uuid
+        """
+        if "id=" not in url:
+            return url
 
-        data = response.json()
-        if "results" not in data or not data["results"]:
-            print("No data / features are available with the queries.")
-            return []
-        return [Feature(f) for f in data["results"]]
+        prefix, id_part = url.split("id=", 1)
 
-    # --- Retrieve observations ---
-    def get_observations(self, constraints):
-        if not hasattr(constraints, "to_query"):
-            raise ValueError("constraints must have a to_query() method")
+        # Handle URL-encoded colon
+        if "%3A" in id_part:
+            _, uuid_part = id_part.split("%3A", 1)
+            return f"{prefix}id=***%3A{uuid_part}"
 
-        query = constraints.to_query()
-        url = self.base_url + "observations?" + query
-        print("Retrieving " + obfuscate_token(url, self.token))
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+        # Handle plain colon
+        if ":" in id_part:
+            _, uuid_part = id_part.split(":", 1)
+            return f"{prefix}id=***:{uuid_part}"
 
-        if "member" not in data or not data["member"]:
-            print("No observations available for these constraints.")
-            return []
+        return url
 
-        return [Observation(obs) for obs in data["member"]]
+    def _obfuscate_token(self, url: str) -> str:
+        """Obfuscate token and download ID for safe printing."""
+        url = url.replace(self.token, "***")
+        url = self._obfuscate_download_id_in_url(url)
+        return url
 
-    # --- Retrieve observation with full data ---
+    def get_features(self, constraints, verbose=True):
+        url = f"{self.base_url}features?{constraints.to_query()}"
+        if verbose:
+            print(f"Retrieving page 1: {self._obfuscate_token(url)}")
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+        features_list = [Feature(f) for f in data.get("results", [])]
+        token = data.get("resumptionToken")
+        resumption_token = token.split(",")[0] if token else None
+        collection = FeaturesCollection(self, constraints, features_list, resumption_token, page=1, verbose=verbose)
+        collection.completed = data.get("completed", True)
+        return collection
+
+    def get_observations(self, constraints, verbose=True):
+        url = f"{self.base_url}observations?{constraints.to_query()}"
+        if verbose:
+            print(f"Retrieving page 1: {self._obfuscate_token(url)}")
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+        obs_list = [Observation(o) for o in data.get("member", [])]
+        token = data.get("resumptionToken")
+        resumption_token = token.split(",")[0] if token else None
+        collection = ObservationsCollection(self, constraints, obs_list, resumption_token, page=1, verbose=verbose)
+        collection.completed = data.get("completed", True)
+        return collection
+
     def get_observation_with_data(self, observation_id, begin=None, end=None):
         url = self.base_url + f"observations?includeData=true&observationIdentifier={urllib.parse.quote(observation_id)}"
         if begin:
             url += "&beginPosition=" + urllib.parse.quote(begin)
         if end:
             url += "&endPosition=" + urllib.parse.quote(end)
-
-        print("Retrieving " + obfuscate_token(url, self.token))
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"HTTP GET failed: {response.status_code}")
-        data = response.json()
+        print("Retrieving " + self._obfuscate_token(url))
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
         if "member" not in data or not data["member"]:
             print("No observation data available for the requested time range.")
             return None
         return Observation(data["member"][0])
 
-    # --- Convert objects to DataFrame ---
+    # Generic helpers
     def features_to_df(self, features):
-        # Return empty DataFrame if no features
         if not features:
-            print("No data / features are available with the queries.")
             return pd.DataFrame()
         return pd.DataFrame([f.to_dict() for f in features])
 
     def observations_to_df(self, observations):
-        # Return empty DataFrame if no observations
         if not observations:
-            print("No data / observations are available with the queries.")
             return pd.DataFrame()
-        return pd.DataFrame([obs.to_dict() for obs in observations])
+        return pd.DataFrame([o.to_dict() for o in observations])
 
     def points_to_df(self, observation):
-        """Convert Observation points to a DataFrame with Time and Value columns."""
-        if not observation.points:
+        if not observation or not observation.points:
             return pd.DataFrame(columns=["Time", "Value"])
-        return pd.DataFrame([
-            {"Time": p.get("time", {}).get("instant"), "Value": p.get("value")}
-            for p in observation.points
-        ])
+        return pd.DataFrame(
+            [{"Time": p.get("time", {}).get("instant"), "Value": p.get("value")} for p in observation.points])
 
     def plot_observation(self, obs, title=None):
-        """Plot time series of an observation with a customizable title."""
-        if not obs.points:
-            print("No data points available.")
+        if not obs or not obs.points:
+            print("No data points available for this observation.")
             return
-
-        times = [
-            datetime.fromisoformat(p["time"]["instant"].replace("Z", "+00:00"))
-            for p in obs.points
-        ]
+        times = [datetime.fromisoformat(p["time"]["instant"].replace("Z", "+00:00")) for p in obs.points]
         values = [p["value"] for p in obs.points]
-
         plt.figure(figsize=(10, 5))
         plt.plot(times, values, "o-", label=obs.observed_property)
-
-        # Title handling
-        title_str = title or f"{obs.observed_property} time series"
-        plt.title(title_str)
-
+        plt.title(title or f"{obs.observed_property} time series")
         plt.xlabel("Date")
-        plt.ylabel(f"Value ({obs.uom})")
+        plt.ylabel(f"Value ({getattr(obs, 'uom', '')})")
         plt.grid(True)
         plt.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
         plt.show()
+
+    # --- DOWNLOADS ---
+    def create_download(self, download_constraints):
+        """PUT: Submit a new download."""
+        url = self.base_url + "downloads?" + download_constraints.to_query()
+
+        # Print the URL (safe)
+        print(f'DOWNLOAD URL: {self._obfuscate_token(url)}')
+
+        # Make the PUT request
+        resp = requests.put(url)
+        resp.raise_for_status()
+
+        # Create Download object from response
+        download_obj = Download(resp.json(), client=self)
+
+        # Now you can access id and status
+        print(f'File "{download_obj.downloadName}" is {download_obj.status}.\nID = "{download_obj.id}"')
+
+        return download_obj
+
+    def get_download_status(self, download_id: str = None, verbose=True):
+        """GET: Check status of a download (all or by ID)."""
+        if download_id:
+            url = self.base_url + f"downloads?id={urllib.parse.quote(download_id)}"
+        else:
+            url = self.base_url + "downloads"
+
+        if verbose:
+            print(f'STATUS URL: {self._obfuscate_token(url)}')  # always print by default
+
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        downloads_list = [Download(d, client=self) for d in data.get("results", [])]
+        return DownloadsCollection(downloads_list)
+
+    def delete_download(self, download_id: str):
+        """DELETE a download by its ID."""
+        if not download_id:
+            raise ValueError("download_id is required")
+
+        url = self.base_url + f"downloads?id={urllib.parse.quote(download_id)}"
+        print(f'Deleting ID "{download_id}" ...\nDELETE URL: {self._obfuscate_token(url)}\"')
+
+        resp = requests.delete(url)
+        resp.raise_for_status()
+
+        return DeleteResult(download_id)
+
+    def _wait_for_download(self, download_id, poll_interval=3):
+        print("Status: ", end="")
+        previous_status = None
+        completed_parts = 0  # how many parts have finished (locator exists)
+
+        while True:
+            obj = self.get_download_status(download_id, verbose=False)[0]
+
+            status = obj.status
+            locators = obj.locator or []
+
+            # Ensure locators is a list
+            if isinstance(locators, str):
+                locators = [locators]
+
+            # Determine current display status
+            if status.lower() in ["submitted", "started"]:
+                current = status
+            elif status.lower() == "partinprogress":
+                # Show the next part to download
+                next_part = len(locators) + 1
+                current = f"Downloading Part {next_part}"
+            elif status.lower() == "completed":
+                current = "Completed"
+            else:
+                current = status  # fallback
+
+            # Print only if changed
+            if current != previous_status:
+                print(current if previous_status is None else f" --> {current}", end="")
+                previous_status = current
+
+            # Update completed parts
+            completed_parts = len(locators)
+
+            # Exit loop when fully completed
+            if status.lower() == "completed" and completed_parts == len(locators):
+                print("")  # new line after completed
+                return obj
+
+            time.sleep(poll_interval)
+
+    def _save_locators(self, locators, base_name=None, save_dir=None):
+        """Save multiple files from a list of locators."""
+        save_dir = Path(save_dir) if save_dir else Path.home() / "Downloads"
+        total_files = len(locators)
+        print(f"There are {total_files} part(s):")
+
+        saved_files = []
+
+        for i, locator in enumerate(locators, start=1):
+            # Determine filename
+            if base_name:
+                if i == 1:
+                    filename = f"{base_name}.zip"
+                else:
+                    filename = f"{base_name}_part{i}.zip"
+            else:
+                filename = Path(urllib.parse.urlparse(locator).path).name
+
+            save_path = save_dir / filename
+
+            # Avoid overwriting
+            base, ext = save_path.stem, save_path.suffix
+            j = 1
+            while save_path.exists():
+                save_path = save_dir / f"{base} ({j}){ext}"
+                j += 1
+
+            # Download file
+            response = requests.get(locator, stream=True)
+            response.raise_for_status()
+            with open(save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            print(f"Part {i} saved to: {save_path}")
+            saved_files.append(save_path)
+
+        return saved_files
+
+    def save_download(self, download_id, save_dir=None):
+        """Save a download, supporting multiple locators (parts)."""
+        obj = self.get_download_status(download_id, verbose=False)[0]
+
+        if obj.status.lower() != "completed":
+            raise RuntimeError(f'Download "{download_id}" is not completed yet (status: {obj.status})')
+
+        if not obj.locators:
+            raise RuntimeError(f'No locators found for download "{download_id}"')
+
+        return self._save_locators(obj.locators, base_name=obj.downloadName, save_dir=save_dir)
+
+    def _save_all_locators(self, locators, base_filename=None, save_dir=None):
+        save_dir = Path(save_dir) if save_dir else Path.home() / "Downloads"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if not base_filename and locators:
+            base_filename = Path(urllib.parse.urlparse(locators[0]).path).stem
+
+        saved_files = []
+
+        print(f"Total {len(locators)} parts")
+
+        for i, url in enumerate(locators, start=1):
+            # Generate filename
+            filename = base_filename
+            if i > 1:
+                filename += f"_part{i}"
+            save_path = save_dir / f"{filename}.zip"
+
+            # Avoid overwriting
+            j = 1
+            while save_path.exists():
+                save_path = save_dir / f"{filename} ({j}).zip"
+                j += 1
+
+            # Download
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            with open(save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            print(f"Part {i} saved to: {save_path}")
+            saved_files.append(save_path)
+
+        return saved_files
+
+    # --- New public method to create + wait + download all parts ---
+    def create_save_download(self, download_constraints, poll_interval=3, save_dir=None):
+        # Submit download
+        download = self.create_download(download_constraints)
+        # Wait for completion with clean part status
+        completed = self._wait_for_download(download.id, poll_interval)
+        # Download all locators (all parts)
+        return self._save_all_locators(completed.locator, base_filename=completed.downloadName, save_dir=save_dir)
+
+# Client subclasses
+class WHOSClient(DABClient):
+    def __init__(self, token, view="whos"):
+        base_url_template = "https://whos.geodab.eu/gs-service/services/essi/token/{token}/view/{view}/om-api/"
+        super().__init__(token, view, base_url_template)
+
+
+class HISCentralClient(DABClient):
+    def __init__(self, token, view="his-central"):
+        base_url_template = "https://his-central.geodab.eu/gs-service/services/essi/token/{token}/view/{view}/om-api/"
+        super().__init__(token, view, base_url_template)
